@@ -386,20 +386,22 @@
     }
 
     async function apiCall(payload) {
-      payload.token = SECRET_TOKEN;
-      const res = await fetch(APPS_SCRIPT_URL, {
-        method: "POST",
-        redirect: "follow",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify(payload)
-      });
-      const rawText = await res.text();
-      try {
-        return JSON.parse(rawText);
-      } catch (err) {
-        return { status: "error", message: rawText };
-      }
-    }
+          payload.token = SECRET_TOKEN;
+          try {
+            const res = await fetch(APPS_SCRIPT_URL, {
+              method: "POST",
+              body: JSON.stringify(payload)
+            });
+            const rawText = await res.text();
+            try {
+              return JSON.parse(rawText);
+            } catch (e) {
+              return { status: "error", message: rawText };
+            }
+          } catch (networkErr) {
+            throw new Error("Gagal terhubung ke Google Apps Script: " + networkErr.message);
+          }
+        }
 
     function toBase64(file) {
       return new Promise((resolve) => {
@@ -411,19 +413,27 @@
       });
     }
 
-    async function previewReportPdf() {
+ async function previewReportPdf() {
       const modal = $('pdfModal');
       const iframe = $('pdfIframe');
       const dlBtn = $('btnDownloadActualPdf');
       
       modal.style.display = 'flex';
       iframe.src = 'about:blank';
+      dlBtn.removeAttribute('href');
 
       try {
         const res = await apiCall({ action: "getReportPdfUrl" });
         if (res.status === "success" && res.pdfUrl) {
-          iframe.src = res.pdfUrl;
+          // 1. Tampilkan pratinjau landscape via Google Docs Viewer resmi
+          iframe.src = "https://docs.google.com/viewer?url=" + encodeURIComponent(res.pdfUrl) + "&embedded=true";
+          
+          // 2. Tombol unduh langsung memicu berkas PDF
           dlBtn.href = res.pdfUrl;
+          dlBtn.onclick = function(e) {
+            e.preventDefault();
+            window.open(res.pdfUrl, '_blank');
+          };
         } else {
           alert("Gagal memuat pratinjau PDF: " + (res.message || "Respon kosong"));
           closePdfModal();
@@ -515,16 +525,53 @@
       }
     }
 
-    async function fetchClaimsList() {
+async function fetchClaimsList() {
       const select = $('uClaimSelect');
       select.innerHTML = "<option value=''>-- Mengambil data terbaru dari Spreadsheet... --</option>";
       try {
         const res = await apiCall({ action: "getActiveClaims" });
         if (res.status === "success" && res.data.length > 0) {
           CLAIMS_CACHE = res.data;
-          select.innerHTML = "<option value=''>-- Pilih Tiket Klaim --</option>" + 
-            res.data.map(c => `<option value="${c.rowIdx}">#${c.no} - ${c.regNo ? `[${c.regNo}] ` : ''}${c.insured} (${c.lob})</option>`).join('');
-          
+
+          // Pisahkan tiket aktif dan tiket settled
+          const activeList = [];
+          const settledList = [];
+
+          res.data.forEach(c => {
+            const isSettled = /(settlement|done|no claim|batal|akhiri proses)/i.test(c.status);
+            if (isSettled) {
+              settledList.push(c);
+            } else {
+              activeList.push(c);
+            }
+          });
+
+          let optHtml = "<option value=''>-- Pilih Tiket Klaim --</option>";
+
+          // 1. KELOMPOK KLAIM AKTIF (Nomor urut dinamis 1, 2, 3... persis REPORT_ATASAN)
+          if (activeList.length > 0) {
+            optHtml += `<optgroup label="📌 KLAIM AKTIF / ON PROCESS (REPORT ATASAN)">`;
+            activeList.forEach((c, idx) => {
+              const noLaporan = idx + 1;
+              const regText = c.regNo && c.regNo !== "-" ? `[${c.regNo}] ` : "";
+              optHtml += `<option value="${c.rowIdx}">#${noLaporan} - ${regText}${c.insured} (${c.lob})</option>`;
+            });
+            optHtml += `</optgroup>`;
+          }
+
+          // 2. KELOMPOK KLAIM SELESAI (Arsip REPORT_SETTLED)
+          if (settledList.length > 0) {
+            optHtml += `<optgroup label="✅ KLAIM SELESAI / SETTLED (ARSIP)">`;
+            settledList.forEach((c, idx) => {
+              const noSettled = idx + 1;
+              const regText = c.regNo && c.regNo !== "-" ? `[${c.regNo}] ` : "";
+              optHtml += `<option value="${c.rowIdx}">[SELESAI #${noSettled}] ${regText}${c.insured} (${c.lob})</option>`;
+            });
+            optHtml += `</optgroup>`;
+          }
+
+          select.innerHTML = optHtml;
+
           if (!$('nCustomNo').value && res.nextNo) {$('nCustomNo').placeholder = String(res.nextNo);
           }
         } else {
